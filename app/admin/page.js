@@ -3,7 +3,7 @@
 import React, { useState, useEffect } from 'react';
 import {
   Lock, Plus, Trash2, Edit2, Play, AlertCircle,
-  CheckCircle, RefreshCw, ChevronLeft, LogOut, Settings
+  CheckCircle, RefreshCw, ChevronLeft, LogOut, Settings, Newspaper, BookOpen
 } from 'lucide-react';
 import Link from 'next/link';
 
@@ -11,13 +11,7 @@ export default function AdminPage() {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [loading, setLoading] = useState(true);
 
-  // Check if we have a session (simple client-side check of cookie existence or rely on API)
-  // Since HttpOnly cookies can't be read by JS, we'll try to fetch a protected resource or just assume login needed
-  // if we fail. For this simple app, we'll use a local state persisted after login or just show login form.
-  // Better approach: Check valid session with an API call. But for now, we'll handle login flow here.
-
   useEffect(() => {
-    // Check session on mount
     fetch('/api/admin/check-session')
         .then(res => res.json())
         .then(data => {
@@ -121,16 +115,21 @@ function AdminDashboard({ onLogout }) {
   const [sources, setSources] = useState([]);
   const [loading, setLoading] = useState(true);
   const [refreshKey, setRefreshKey] = useState(0);
+  const [activeTab, setActiveTab] = useState('news'); // 'news' or 'paper'
 
   useEffect(() => {
-    fetch('/api/rss-sources')
+    setLoading(true);
+    fetch(`/api/rss-sources?type=${activeTab}`)
       .then(res => res.json())
       .then(data => {
           setSources(data);
           setLoading(false);
       })
-      .catch(err => console.error(err));
-  }, [refreshKey]);
+      .catch(err => {
+        console.error(err);
+        setLoading(false);
+      });
+  }, [refreshKey, activeTab]);
 
   const refreshSources = () => setRefreshKey(k => k + 1);
 
@@ -166,11 +165,30 @@ function AdminDashboard({ onLogout }) {
 
         {/* RSS Sources Management */}
         <section className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
-          <div className="p-6 border-b border-gray-100 flex justify-between items-center">
-            <h2 className="text-lg font-bold text-gray-800 flex items-center gap-2">
-              <RssIcon /> 订阅源管理
-            </h2>
-            <AddSourceButton onAdded={refreshSources} />
+          <div className="p-6 border-b border-gray-100">
+              <div className="flex flex-col md:flex-row md:justify-between md:items-center gap-4 mb-4">
+                <h2 className="text-lg font-bold text-gray-800 flex items-center gap-2">
+                    <RssIcon /> 订阅源管理
+                </h2>
+
+                {/* Tab Switcher */}
+                <div className="bg-gray-100 p-1 rounded-lg inline-flex">
+                    <button
+                        onClick={() => setActiveTab('news')}
+                        className={`flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium transition-all ${activeTab === 'news' ? 'bg-white shadow text-indigo-600' : 'text-gray-500 hover:text-gray-700'}`}
+                    >
+                        <Newspaper className="w-4 h-4" /> 新闻资讯
+                    </button>
+                    <button
+                        onClick={() => setActiveTab('paper')}
+                        className={`flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium transition-all ${activeTab === 'paper' ? 'bg-white shadow text-indigo-600' : 'text-gray-500 hover:text-gray-700'}`}
+                    >
+                        <BookOpen className="w-4 h-4" /> 学术论文
+                    </button>
+                </div>
+
+                <AddSourceButton onAdded={refreshSources} type={activeTab} />
+              </div>
           </div>
 
           {loading ? (
@@ -188,10 +206,10 @@ function AdminDashboard({ onLogout }) {
                 </thead>
                 <tbody className="divide-y divide-gray-100">
                   {sources.map(source => (
-                    <SourceRow key={source.id} source={source} onRefresh={refreshSources} />
+                    <SourceRow key={source.id} source={source} onRefresh={refreshSources} type={activeTab} />
                   ))}
                   {sources.length === 0 && (
-                      <tr><td colSpan="4" className="px-6 py-8 text-center text-gray-400">暂无订阅源</td></tr>
+                      <tr><td colSpan="4" className="px-6 py-8 text-center text-gray-400">暂无{activeTab === 'news' ? '新闻' : '学术'}订阅源</td></tr>
                   )}
                 </tbody>
               </table>
@@ -204,7 +222,7 @@ function AdminDashboard({ onLogout }) {
   );
 }
 
-function SourceRow({ source, onRefresh }) {
+function SourceRow({ source, onRefresh, type }) {
   const [isEditing, setIsEditing] = useState(false);
   const [formData, setFormData] = useState({ name: source.name, url: source.url, custom_prompt: source.custom_prompt || '' });
   const [loading, setLoading] = useState(false);
@@ -212,7 +230,7 @@ function SourceRow({ source, onRefresh }) {
   const handleDelete = async () => {
     if (!confirm(`确定要删除 "${source.name}" 吗？这不会删除已抓取的文章。`)) return;
     try {
-        await fetch(`/api/rss-sources/${source.id}`, { method: 'DELETE' });
+        await fetch(`/api/rss-sources/${source.id}?type=${type}`, { method: 'DELETE' });
         onRefresh();
     } catch(e) { alert('删除失败'); }
   };
@@ -220,7 +238,7 @@ function SourceRow({ source, onRefresh }) {
   const handleClearArticles = async () => {
     if (!confirm(`确定要清空属于 "${source.name}" 的所有已抓取文章吗？此操作不可恢复。`)) return;
     try {
-        const res = await fetch(`/api/admin/clear-articles?rss_source=${encodeURIComponent(source.name)}`, { method: 'DELETE' });
+        const res = await fetch(`/api/admin/clear-articles?rss_source=${encodeURIComponent(source.name)}&type=${type}`, { method: 'DELETE' });
         const data = await res.json();
         if (data.success) {
             alert(`清理成功，删除了 ${data.count} 篇文章`);
@@ -236,7 +254,7 @@ function SourceRow({ source, onRefresh }) {
         const res = await fetch(`/api/rss-sources/${source.id}`, {
             method: 'PUT',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify(formData)
+            body: JSON.stringify({ ...formData, type })
         });
         if (res.ok) {
             setIsEditing(false);
@@ -289,7 +307,7 @@ function SourceRow({ source, onRefresh }) {
   );
 }
 
-function AddSourceButton({ onAdded }) {
+function AddSourceButton({ onAdded, type }) {
     const [open, setOpen] = useState(false);
     const [formData, setFormData] = useState({ name: '', url: '', custom_prompt: '' });
     const [loading, setLoading] = useState(false);
@@ -301,7 +319,7 @@ function AddSourceButton({ onAdded }) {
             const res = await fetch('/api/rss-sources', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify(formData)
+                body: JSON.stringify({ ...formData, type })
             });
             if (res.ok) {
                 setOpen(false);
@@ -317,7 +335,7 @@ function AddSourceButton({ onAdded }) {
     if (!open) {
         return (
             <button onClick={() => setOpen(true)} className="flex items-center gap-2 bg-indigo-600 text-white px-4 py-2 rounded-lg hover:bg-indigo-700 transition-colors text-sm font-medium">
-                <Plus className="w-4 h-4" /> 新增订阅源
+                <Plus className="w-4 h-4" /> 新增{type === 'news' ? '新闻' : '学术'}源
             </button>
         );
     }
@@ -325,7 +343,7 @@ function AddSourceButton({ onAdded }) {
     return (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
             <div className="bg-white rounded-xl shadow-xl w-full max-w-md p-6">
-                <h3 className="text-lg font-bold mb-4">新增订阅源</h3>
+                <h3 className="text-lg font-bold mb-4">新增{type === 'news' ? '新闻' : '学术'}订阅源</h3>
                 <form onSubmit={handleSubmit} className="space-y-4">
                     <div>
                         <label className="block text-sm font-medium mb-1">名称</label>
@@ -337,6 +355,7 @@ function AddSourceButton({ onAdded }) {
                     </div>
                     <div>
                         <label className="block text-sm font-medium mb-1">Custom Prompt (可选)</label>
+                        <p className="text-xs text-gray-500 mb-1">留空将使用默认 Prompt</p>
                         <textarea className="w-full border rounded-lg px-3 py-2" value={formData.custom_prompt} onChange={e => setFormData({...formData, custom_prompt: e.target.value})} />
                     </div>
                     <div className="flex gap-3 justify-end mt-6">

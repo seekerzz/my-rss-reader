@@ -10,12 +10,14 @@ export async function DELETE(request) {
   try {
     const { searchParams } = new URL(request.url);
     const rssSource = searchParams.get('rss_source');
+    const type = searchParams.get('type') || 'news';
 
     if (!rssSource) {
       return NextResponse.json({ error: 'rss_source parameter is required' }, { status: 400 });
     }
 
-    const query = 'DELETE FROM processed_articles WHERE rss_source = $1';
+    const tableName = type === 'paper' ? 'arxiv_processed_articles' : 'processed_articles';
+    const query = `DELETE FROM ${tableName} WHERE rss_source = $1`;
 
     const client = await pool.connect();
     try {

@@ -8,6 +8,9 @@ export async function GET(request) {
     const limit = parseInt(searchParams.get('limit')) || 15;
     const offset = (page - 1) * limit;
 
+    const type = searchParams.get('type') || 'news';
+    const tableName = type === 'paper' ? 'arxiv_processed_articles' : 'processed_articles';
+
     const rssSource = searchParams.get('source');
     const keyword = searchParams.get('keyword');
     const search = searchParams.get('search');
@@ -52,7 +55,7 @@ export async function GET(request) {
 
     const whereStr = whereClauses.length > 0 ? `WHERE ${whereClauses.join(' AND ')}` : '';
 
-    const countQuery = `SELECT COUNT(*) FROM processed_articles ${whereStr}`;
+    const countQuery = `SELECT COUNT(*) FROM ${tableName} ${whereStr}`;
     const dataQuery = `
       SELECT 
         id, 
@@ -63,7 +66,7 @@ export async function GET(request) {
         keywords, 
         published_at, 
         created_at
-      FROM processed_articles 
+      FROM ${tableName}
       ${whereStr}
       ORDER BY published_at DESC 
       LIMIT $${paramIndex++} OFFSET $${paramIndex++}

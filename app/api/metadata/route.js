@@ -1,14 +1,18 @@
 import pool from '@/lib/db';
 import { NextResponse } from 'next/server';
 
-export async function GET() {
+export async function GET(request) {
   try {
+    const { searchParams } = new URL(request.url);
+    const type = searchParams.get('type') || 'news';
+    const tableName = type === 'paper' ? 'arxiv_processed_articles' : 'processed_articles';
+
     const client = await pool.connect();
     try {
       // Get Sources Counts
       const sourcesQuery = `
         SELECT rss_source as name, COUNT(*) as count
-        FROM processed_articles
+        FROM ${tableName}
         GROUP BY rss_source
         ORDER BY count DESC
       `;
@@ -19,7 +23,7 @@ export async function GET() {
         SELECT keyword as name, COUNT(*) as count
         FROM (
           SELECT unnest(keywords) as keyword
-          FROM processed_articles
+          FROM ${tableName}
         ) as k
         GROUP BY keyword
         ORDER BY count DESC

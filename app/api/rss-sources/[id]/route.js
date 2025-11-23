@@ -10,10 +10,13 @@ export async function PUT(request, { params }) {
   try {
     const { id } = await params;
     const body = await request.json();
-    const { name, url, custom_prompt } = body;
+    const { name, url, custom_prompt, type } = body;
+
+    const targetType = type || 'news';
+    const tableName = targetType === 'paper' ? 'arxiv_rss_sources' : 'rss_sources';
 
     const query = `
-      UPDATE rss_sources
+      UPDATE ${tableName}
       SET name = $1, url = $2, custom_prompt = $3
       WHERE id = $4
       RETURNING *
@@ -46,7 +49,11 @@ export async function DELETE(request, { params }) {
 
   try {
     const { id } = await params;
-    const query = 'DELETE FROM rss_sources WHERE id = $1 RETURNING *';
+    const { searchParams } = new URL(request.url);
+    const type = searchParams.get('type') || 'news';
+    const tableName = type === 'paper' ? 'arxiv_rss_sources' : 'rss_sources';
+
+    const query = `DELETE FROM ${tableName} WHERE id = $1 RETURNING *`;
 
     const client = await pool.connect();
     try {
