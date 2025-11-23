@@ -1,3 +1,77 @@
+#!/bin/bash
+
+echo "🚀 开始自动配置 RSS Reader 文件..."
+
+# --- 1. 创建 lib/db.js ---
+echo "📂 创建 lib 目录..."
+mkdir -p lib
+
+echo "📝 写入 lib/db.js..."
+cat << 'EOF' > lib/db.js
+import { Pool } from 'pg';
+
+let pool;
+
+if (!global.pgPool) {
+  global.pgPool = new Pool({
+    connectionString: process.env.DATABASE_URL,
+    // 如果是在生产环境(Railway内部)，或者本地连Railway公网，通常需要 SSL 配置
+    ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false,
+  });
+}
+
+pool = global.pgPool;
+
+export default pool;
+EOF
+
+# --- 2. 创建 app/api/articles/route.js ---
+echo "📂 创建 app/api/articles 目录..."
+mkdir -p app/api/articles
+
+echo "📝 写入 app/api/articles/route.js..."
+cat << 'EOF' > app/api/articles/route.js
+import pool from '@/lib/db';
+import { NextResponse } from 'next/server';
+
+export async function GET() {
+  try {
+    const query = `
+      SELECT 
+        id, 
+        article_url, 
+        rss_source, 
+        title, 
+        summary, 
+        keywords, 
+        published_at, 
+        created_at
+      FROM processed_articles 
+      ORDER BY published_at DESC 
+      LIMIT 500
+    `;
+    
+    const client = await pool.connect();
+    try {
+      const result = await client.query(query);
+      return NextResponse.json(result.rows);
+    } finally {
+      client.release();
+    }
+  } catch (error) {
+    console.error('Database Error:', error);
+    return NextResponse.json(
+      { error: 'Failed to fetch articles' },
+      { status: 500 }
+    );
+  }
+}
+EOF
+
+# --- 3. 覆盖 app/page.js ---
+# 注意：有些 Next.js 版本默认生成的是 page.tsx 或 page.jsx，这里统一覆盖为 page.js
+echo "📝 覆盖 app/page.js..."
+cat << 'EOF' > app/page.js
 'use client';
 
 import React, { useState, useEffect, useMemo } from 'react';
@@ -227,3 +301,6 @@ function ArticleItem({ article, viewMode, onKeywordClick }) {
     </div>
   );
 }
+EOF
+
+echo "✅ 配置完成！请确保你创建了 .env.local 文件用于本地开发。"
