@@ -10,11 +10,15 @@ export async function POST(request) {
     const { username, password } = await request.json();
 
     // Read the target URL from environment variable
-    const backendUrl = process.env.BACKEND_URL;
+    let backendUrl = process.env.BACKEND_URL;
 
     if (!backendUrl) {
       return NextResponse.json({ error: 'Backend URL not configured on server' }, { status: 500 });
     }
+
+    // Append query parameter for trigger identification
+    const url = new URL(backendUrl);
+    url.searchParams.append('trigger', 'admin_manual');
 
     const headers = {
         'Content-Type': 'application/json'
@@ -26,10 +30,11 @@ export async function POST(request) {
         headers['Authorization'] = `Basic ${encoded}`;
     }
 
-    const response = await fetch(backendUrl, {
-        method: 'POST', // Assuming the n8n webhook expects POST
+    // Changed to GET as per n8n webhook requirements (often default to GET)
+    // and user feedback regarding 404 on POST.
+    const response = await fetch(url.toString(), {
+        method: 'GET',
         headers: headers,
-        body: JSON.stringify({ trigger: 'admin_manual' }) // Send some payload if needed
     });
 
     if (!response.ok) {
