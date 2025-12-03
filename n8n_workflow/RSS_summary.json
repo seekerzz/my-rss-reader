@@ -1,0 +1,761 @@
+{
+  "name": "RSS Feed Processing and AI Summarization with PostgreSQL copy",
+  "nodes": [
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "id-1",
+              "name": "defaultPrompt",
+              "value": "Please summarize this article in a concise manner and extract 5-10 relevant keywords. Return the response in JSON format with keys: summary (string) and keywords (array of strings).",
+              "type": "string"
+            }
+          ]
+        },
+        "includeOtherFields": true,
+        "options": {}
+      },
+      "id": "cc6e293b-bc3a-46c6-80ea-80daba325080",
+      "name": "Workflow Configuration",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        224,
+        192
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "CREATE TABLE IF NOT EXISTS rss_sources (\n    id SERIAL PRIMARY KEY,\n    name VARCHAR(255),\n    url TEXT NOT NULL UNIQUE,\n    custom_prompt TEXT\n);\n\nCREATE TABLE IF NOT EXISTS processed_articles (\n    id SERIAL PRIMARY KEY,\n    article_url TEXT NOT NULL UNIQUE,\n    rss_source TEXT,\n    title TEXT,\n    summary TEXT,\n    keywords TEXT[],\n    published_at TIMESTAMPTZ,\n    created_at TIMESTAMPTZ DEFAULT NOW()\n);",
+        "options": {}
+      },
+      "id": "220f7327-1df2-43bc-9e8f-0413496ae1db",
+      "name": "Create Tables If Not Exist",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        464,
+        192
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "JU6SIrgQuP1sLQ2p",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT id, name, url, custom_prompt FROM rss_sources",
+        "options": {}
+      },
+      "id": "511ad52f-fb41-40e2-9cc8-69ecf626d862",
+      "name": "Get RSS Sources",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        720,
+        192
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "JU6SIrgQuP1sLQ2p",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.url }}",
+        "options": {}
+      },
+      "id": "d3de3db0-85d8-4e3e-bd2d-fd0d08fdaacf",
+      "name": "Read RSS Feed",
+      "type": "n8n-nodes-base.rssFeedRead",
+      "typeVersion": 1.2,
+      "position": [
+        1184,
+        192
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const threeMonthsAgo = new Date();\nthreeMonthsAgo.setMonth(threeMonthsAgo.getMonth() - 3);\n\nconst filteredItems = $input.all().filter(item => {\n  const pubDate = new Date(item.json.pubDate || item.json.isoDate);\n  return pubDate >= threeMonthsAgo;\n});\n\nreturn filteredItems;"
+      },
+      "id": "933255f2-bc5b-4ecd-8d7e-301f9cadc2d7",
+      "name": "Filter Last 3 Months",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1408,
+        192
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=SELECT COUNT(*) as count FROM processed_articles WHERE article_url = '{{ $json.link }}'",
+        "options": {}
+      },
+      "id": "080057ae-4523-41b8-ba42-fdd0aeb81673",
+      "name": "Check If Article Exists",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        2128,
+        192
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "JU6SIrgQuP1sLQ2p",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "id-1",
+              "name": "articleTitle",
+              "value": "={{ $json.title }}",
+              "type": "string"
+            },
+            {
+              "id": "id-2",
+              "name": "articleContent",
+              "value": "={{ $json['content:encodedSnippet'] }}",
+              "type": "string"
+            },
+            {
+              "id": "id-3",
+              "name": "articleUrl",
+              "value": "={{ $json.link }}",
+              "type": "string"
+            },
+            {
+              "id": "id-4",
+              "name": "publishedAt",
+              "value": "={{ $json.pubDate || $json.isoDate }}",
+              "type": "string"
+            },
+            {
+              "id": "id-6",
+              "name": "prompt",
+              "value": "={{ $json.custom_prompt }}",
+              "type": "string"
+            }
+          ]
+        },
+        "includeOtherFields": true,
+        "options": {}
+      },
+      "id": "1d00f41b-a2de-45f9-ae09-ed185e74dfc7",
+      "name": "Prepare AI Input",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        2528,
+        464
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// ================= 配置区 =================\n// 设置摘要的最大长度（例如 5000 字符），防止数据库报错或内存溢出\nconst MAX_SUMMARY_LENGTH = 300; \n// 设置 AI 响应处理的硬上限，如果 AI 回复了几十兆的内容，直接截断处理\nconst MAX_RESPONSE_LENGTH = 1000; \n\n// ================= 辅助函数 =================\n\n/**\n * 安全地截断并转义 SQL 字符串\n * 优化逻辑：先截断以节省内存，再进行转义\n */\nfunction safeSqlString(str, maxLength) {\n  if (typeof str !== 'string') {\n    // 处理非字符串情况（null, undefined, objects 等）\n    if (str === null || str === undefined) return '';\n    str = String(str);\n  }\n\n  // 1. 先进行截断 (Truncate)，避免处理过长字符串\n  // 注意：如果 maxLength 未定义，则默认使用全局配置\n  const limit = maxLength || MAX_SUMMARY_LENGTH;\n  if (str.length > limit) {\n    str = str.substring(0, limit) + '...[truncated]';\n  }\n\n  // 2. 再进行转义 (Escape)\n  // 这样可以确保即使全都是单引号，内存增长也是可控的\n  return str.replace(/'/g, \"''\");\n}\n\n/**\n * 尝试从混合文本中提取 JSON\n * 优化逻辑：使用索引定位代替正则匹配，大幅降低内存消耗\n */\nfunction extractJsonSafe(text) {\n  if (!text) return null;\n\n  // 限制处理的文本长度，防止处理几十 MB 的垃圾数据\n  const processText = text.length > MAX_RESPONSE_LENGTH \n    ? text.substring(0, MAX_RESPONSE_LENGTH) \n    : text;\n\n  const startIndex = processText.indexOf('{');\n  const endIndex = processText.lastIndexOf('}');\n\n  if (startIndex !== -1 && endIndex !== -1 && endIndex > startIndex) {\n    try {\n      // 只截取花括号中间的部分进行解析\n      const potentialJson = processText.substring(startIndex, endIndex + 1);\n      return JSON.parse(potentialJson);\n    } catch (e) {\n      // 解析失败，说明可能不是有效的 JSON，返回 null\n      return null;\n    }\n  }\n  return null;\n}\n\n// ================= 主逻辑 =================\n\nconst aiResponse = $json.message?.content || $json.text || '';\nlet parsedData = {\n  summary: '',\n  keywords: []\n};\n\n// 1. 尝试提取并解析 JSON\nconst jsonObject = extractJsonSafe(aiResponse);\n\nif (jsonObject) {\n  // A. 成功解析出 JSON\n  parsedData.summary = safeSqlString(jsonObject.summary, MAX_SUMMARY_LENGTH);\n  \n  // 处理关键词：确保是数组，并对每个词进行处理\n  if (Array.isArray(jsonObject.keywords)) {\n    parsedData.keywords = jsonObject.keywords\n      .slice(0, 20) // 限制关键词数量，防止由 AI 生成过多导致的异常\n      .map(k => safeSqlString(k, 100)); // 限制单个关键词长度\n  }\n} else {\n  // B. 无法解析 JSON (回退模式)\n  // 直接将整个 AI 回复作为摘要，但也必须截断\n  parsedData.summary = safeSqlString(aiResponse, MAX_SUMMARY_LENGTH);\n}\n\n// ================= 返回结果 =================\n\nreturn {\n  json: {\n    articleUrl: $('Prepare AI Input').item.json.articleUrl,\n    title: $('Prepare AI Input').item.json.articleTitle,\n    summary: parsedData.summary,\n    keywords: parsedData.keywords, // 如果没有，这里是 []\n    publishedAt: $('Prepare AI Input').item.json.publishedAt,\n    rssSource: $('Prepare AI Input').item.json.rss_source\n  }\n};"
+      },
+      "id": "6b396f9e-b3b6-4d84-8535-ff25582ddf83",
+      "name": "Parse AI Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2832,
+        704
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=INSERT INTO processed_articles (article_url, title, summary, keywords, published_at, rss_source)\nVALUES (\n  '{{ $json.articleUrl }}',\n  '{{ $json.title }}',\n  '{{ $json.summary }}',\n  ARRAY[{{ $json.keywords.map(k => \"'\" + k + \"'\").join(',') }}],\n  '{{ $json.publishedAt }}',\n  '{{ $json.rssSource }}'\n)\nON CONFLICT (article_url) DO NOTHING",
+        "options": {}
+      },
+      "id": "089a6a6e-dc7d-42aa-9ca1-0ff83a5bb22d",
+      "name": "Save Article to Database",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        3040,
+        704
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "JU6SIrgQuP1sLQ2p",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "DELETE FROM processed_articles WHERE created_at < NOW() - INTERVAL '3 months'",
+        "options": {}
+      },
+      "id": "aac50350-ea38-4d32-899f-4f68265fad27",
+      "name": "Clean Old Articles",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1184,
+        0
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "JU6SIrgQuP1sLQ2p",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combineBy": "combineByPosition",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        2352,
+        192
+      ],
+      "id": "078950bb-1a48-4441-966d-db48dbf7fe86",
+      "name": "Merge"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "af4f5061-704d-4dd9-a657-053f6f2017a4",
+              "name": "custom_prompt",
+              "value": "={{ $('Get RSS Sources').item.json.custom_prompt }}",
+              "type": "string"
+            },
+            {
+              "id": "71ba7752-6cf6-4d6a-9a7d-f6b4f35b38a3",
+              "name": "rss_source",
+              "value": "={{ $('Get RSS Sources').item.json.name }}",
+              "type": "string"
+            }
+          ]
+        },
+        "includeOtherFields": true,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        2352,
+        464
+      ],
+      "id": "0004d5fa-5c09-4073-8564-cbf22ca65ed0",
+      "name": "Edit Fields"
+    },
+    {
+      "parameters": {
+        "model": "qwen/qwen3-8b",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenRouter",
+      "typeVersion": 1,
+      "position": [
+        2480,
+        864
+      ],
+      "id": "7d8e2ce6-84b8-4d42-96bd-3b7b3e467746",
+      "name": "OpenRouter Chat Model",
+      "credentials": {
+        "openRouterApi": {
+          "id": "R7DhBFvNu7zeGlg5",
+          "name": "OpenRouter account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "id-1",
+              "leftValue": "={{ Number($json.count) }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "7c880f09-922b-40d7-aba8-a31c00e6247c",
+      "name": "Article Not Processed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        2528,
+        192
+      ],
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ $json.prompt}}\n正文如下：\n{{ $json.articleContent }}\n---\n你必须采用json的形式返回结果，summary对应到总结，keywords对应到关键词。",
+        "batching": {
+          "delayBetweenBatches": 200
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.7,
+      "position": [
+        2480,
+        704
+      ],
+      "id": "c671ebf3-2adb-4eef-9eb7-adde0cc9289e",
+      "name": "LLM Summary"
+    },
+    {
+      "parameters": {
+        "path": "refresh",
+        "authentication": "basicAuth",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        0,
+        0
+      ],
+      "id": "e82992a1-49b4-4693-9098-ec01f349291a",
+      "name": "Webhook",
+      "webhookId": "5c32ce0a-28fc-401e-ba1c-8228beb35018",
+      "credentials": {
+        "httpBasicAuth": {
+          "id": "Z692FyotIuUTGhDv",
+          "name": "Unnamed credential"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "content": "## 注意\n需要设置成循环小Batch执行，防止一次提交过多导致内存炸掉;\nLIMIT这里让循环只进行一次"
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1040,
+        400
+      ],
+      "id": "ca03968d-f16c-4433-bc49-5394752605fb",
+      "name": "Sticky Note"
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        1024,
+        192
+      ],
+      "id": "a294753c-0b66-4d04-a226-2ee76ed5ea2e",
+      "name": "按照RSS源循环"
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        1712,
+        464
+      ],
+      "id": "94360dd9-bcd9-4798-98a3-e228ad61ca84",
+      "name": "按照单条RSS新闻循环",
+      "alwaysOutputData": false
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        384
+      ],
+      "id": "ce7b447e-cc5d-4cd5-b92c-fd2a983eb500",
+      "name": "When clicking ‘Execute workflow’"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "950329ee-1a1a-4ff8-b2e5-0858839402d5",
+              "leftValue": "={{ $json }}",
+              "rightValue": "",
+              "operator": {
+                "type": "object",
+                "operation": "empty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        2800,
+        192
+      ],
+      "id": "3eee42c7-cc99-4a91-9ef6-d65a746657d5",
+      "name": "判断是否全空"
+    },
+    {
+      "parameters": {
+        "content": "## 注意\n要特别设置成必须输出Output，防止全为空的情况"
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        2096,
+        16
+      ],
+      "id": "a0e00ba8-efdd-4cd8-bfd1-dd9f7c3a50bc",
+      "name": "Sticky Note1"
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.limit",
+      "typeVersion": 1,
+      "position": [
+        1424,
+        464
+      ],
+      "id": "5a4b4ac5-60ae-480e-8c35-91244ee0badf",
+      "name": "Finsh Flag"
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 8
+            }
+          ]
+        }
+      },
+      "id": "0beed7ae-3f75-48a7-8ba2-5fbb868c146f",
+      "name": "Hours Timer",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        192
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Workflow Configuration": {
+      "main": [
+        [
+          {
+            "node": "Create Tables If Not Exist",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Tables If Not Exist": {
+      "main": [
+        [
+          {
+            "node": "Get RSS Sources",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get RSS Sources": {
+      "main": [
+        [
+          {
+            "node": "按照RSS源循环",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read RSS Feed": {
+      "main": [
+        [
+          {
+            "node": "Filter Last 3 Months",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter Last 3 Months": {
+      "main": [
+        [
+          {
+            "node": "Check If Article Exists",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check If Article Exists": {
+      "main": [
+        [
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Prepare AI Input": {
+      "main": [
+        [
+          {
+            "node": "LLM Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse AI Response": {
+      "main": [
+        [
+          {
+            "node": "Save Article to Database",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save Article to Database": {
+      "main": [
+        [
+          {
+            "node": "按照单条RSS新闻循环",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge": {
+      "main": [
+        [
+          {
+            "node": "Article Not Processed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Edit Fields": {
+      "main": [
+        [
+          {
+            "node": "Prepare AI Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenRouter Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "LLM Summary",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Article Not Processed?": {
+      "main": [
+        [
+          {
+            "node": "判断是否全空",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "LLM Summary": {
+      "main": [
+        [
+          {
+            "node": "Parse AI Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Workflow Configuration",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "按照RSS源循环": {
+      "main": [
+        [
+          {
+            "node": "Clean Old Articles",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Read RSS Feed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "按照单条RSS新闻循环": {
+      "main": [
+        [
+          {
+            "node": "Finsh Flag",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Edit Fields",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "When clicking ‘Execute workflow’": {
+      "main": [
+        [
+          {
+            "node": "Workflow Configuration",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "判断是否全空": {
+      "main": [
+        [
+          {
+            "node": "按照RSS源循环",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "按照单条RSS新闻循环",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Finsh Flag": {
+      "main": [
+        [
+          {
+            "node": "按照RSS源循环",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Hours Timer": {
+      "main": [
+        [
+          {
+            "node": "Workflow Configuration",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "997aa730-7da7-4db4-9b6d-30bae37bcf7b",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "ea6a02a6292ecb36a9cee569295c8e810e112c4a90d648d28a0d94b601fda55a"
+  },
+  "id": "XwE3BSDIrTTCSBIS",
+  "tags": []
+}
